@@ -5,6 +5,7 @@ import {
   clamp,
   computeFlyTransform,
   computeScrollProgress,
+  computeSlotScrollRange,
   type Point2D,
   type RectBox,
 } from '../lib/scrollMath';
@@ -17,12 +18,17 @@ interface HeroToCategoryStageProps {
 
 const FLY_BASE_SIZE = 188;
 
+interface SlotScrollBounds {
+  scrollStart: number;
+  scrollEnd: number;
+}
+
 interface MeasuredLayout {
   heroCenter: Point2D;
   stageScale: number;
   slots: Record<string, RectBox>;
-  scrollStart: number;
-  scrollEnd: number;
+  slotRanges: Record<string, SlotScrollBounds>;
+  maxScrollEnd: number;
   animationEnabled: boolean;
 }
 
@@ -40,7 +46,7 @@ export function HeroToCategoryStage({
 
   const layoutRef = useRef<MeasuredLayout | null>(null);
   const pointerRef = useRef<Point2D>({ x: 0, y: 0 });
-  const smoothProgressRef = useRef(0);
+  const smoothScrollYRef = useRef(0);
 
   const [hoveredCatId, setHoveredCatId] = useState<string | null>(null);
   const [flyProgressAttr, setFlyProgressAttr] = useState('0.00');
@@ -49,6 +55,7 @@ export function HeroToCategoryStage({
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
     let reducedMotion = mediaQuery.matches;
+    smoothScrollYRef.current = window.scrollY;
 
     function measureLayout() {
       const stageEl = stageRef.current;
@@ -61,45 +68,65 @@ export function HeroToCategoryStage({
 
       const stageRect = stageEl.getBoundingClientRect();
       const heroRect = heroVisEl.getBoundingClientRect();
-      const catRect = catSecEl.getBoundingClientRect();
       const scrollY = window.scrollY;
+      const viewportHeight = window.innerHeight;
+      const isCompact = window.innerWidth < 900;
 
       const heroCenter: Point2D = {
         x: heroRect.left - stageRect.left + heroRect.width / 2,
         y: heroRect.top - stageRect.top + heroRect.height / 2,
       };
+      const heroCenterDocY = heroRect.top + scrollY + heroRect.height / 2;
 
       // Scale orbital radii proportionally so both 1440px desktop and 390px mobile fit cleanly without overflow
       const stageScale = clamp(heroRect.width / 540, 0.54, 1.05);
 
       const slots: Record<string, RectBox> = {};
-      for (const cat of CATEGORIES) {
-        const slotEl = slotRefs.current[cat.id];
-        if (slotEl) {
-          const r = slotEl.getBoundingClientRect();
-          slots[cat.id] = {
-            x: r.left - stageRect.left,
-            y: r.top - stageRect.top,
-            width: r.width,
-            height: r.height,
-          };
-        }
-      }
+      const slotRanges: Record<string, SlotScrollBounds> = {};
+      let maxScrollEnd = 600;
 
-      const catTopDoc = catRect.top + scrollY;
-      const isCompact = window.innerWidth < 900;
-      const scrollStart = isCompact ? 80 : 12;
-      const scrollEnd = Math.max(
-        scrollStart + 320,
-        catTopDoc - (isCompact ? 90 : 125)
-      );
+      CATEGORIES.forEach((cat, idx) => {
+        const slotEl = slotRefs.current[cat.id];
+        if (!slotEl) return;
+        const r = slotEl.getBoundingClientRect();
+        slots[cat.id] = {
+          x: r.left - stageRect.left,
+          y: r.top - stageRect.top,
+          width: r.width,
+          height: r.height,
+        };
+
+        const slotCenterDocY = r.top + scrollY + r.height / 2;
+        // Row 1 docks near viewport center (~48%), Row 2 docks cleanly below it (~64%) on desktop;
+        // on mobile every card docks calmly as it crosses ~56% viewport height.
+        const dockViewportRatio = isCompact
+          ? 0.56
+          : cat.row === 1
+            ? 0.49
+            : 0.65;
+        // Subtle organic peel-off stagger (0..42px) without compressing the flight speed
+        const staggerPx = (isCompact ? 36 : 8) + (idx % 4) * 12;
+
+        const range = computeSlotScrollRange({
+          heroCenterDocY,
+          slotCenterDocY,
+          viewportHeight,
+          dockViewportRatio,
+          staggerPx,
+        });
+
+        slotRanges[cat.id] = range;
+        if (range.scrollEnd > maxScrollEnd) {
+          maxScrollEnd = range.scrollEnd;
+        }
+      });
 
       layoutRef.current = {
         heroCenter,
         stageScale,
         slots,
-        scrollStart,
-        scrollEnd,
+        slotRanges,
+        maxScrollEnd,
         animationEnabled: enabled,
       };
     }
@@ -129,29 +156,38 @@ export function HeroToCategoryStage({
     function tick(now: number) {
       const layout = layoutRef.current;
       if (layout && layout.animationEnabled) {
-        const targetProgress = computeScrollProgress(
-          window.scrollY,
-          layout.scrollStart,
-          layout.scrollEnd
+        const targetScrollY = window.scrollY;
+        const deltaY = targetScrollY - smoothScrollYRef.current;
+        // Smooth, responsive scroll-linked damping (never shoots ahead of scroll)
+        smoothScrollYRef.current =
+          Math.abs(deltaY) < 0.35
+            ? targetScrollY
+            : smoothScrollYRef.current + deltaY * 0.18;
+
+        const currentScrollY = smoothScrollYRef.current;
+        const overallProgress = computeScrollProgress(
+          currentScrollY,
+          0,
+          layout.maxScrollEnd
         );
-
-        const delta = targetProgress - smoothProgressRef.current;
-        smoothProgressRef.current =
-          Math.abs(delta) < 0.001
-            ? targetProgress
-            : smoothProgressRef.current + delta * 0.22;
-
-        const p = smoothProgressRef.current;
         const timeSec = (now - startTime) / 1000;
 
         for (const cat of CATEGORIES) {
           const flyEl = flyingNodeRefs.current[cat.id];
           const staticEl = staticImgRefs.current[cat.id];
           const slot = layout.slots[cat.id];
-          if (!flyEl || !slot) continue;
+          const range = layout.slotRanges[cat.id];
+          if (!flyEl || !slot || !range) continue;
+
+          const directProgress = computeScrollProgress(
+            currentScrollY,
+            range.scrollStart,
+            range.scrollEnd
+          );
 
           const tf = computeFlyTransform({
-            globalProgress: p,
+            globalProgress: overallProgress,
+            directProgress,
             heroCenter: layout.heroCenter,
             targetSlot: slot,
             baseWidth: FLY_BASE_SIZE,
@@ -171,10 +207,10 @@ export function HeroToCategoryStage({
           }
         }
 
-        const quantized = Math.round(p * 20) / 20;
+        const quantized = Math.round(overallProgress * 20) / 20;
         if (quantized !== lastReportedProgress) {
           lastReportedProgress = quantized;
-          setFlyProgressAttr(p.toFixed(2));
+          setFlyProgressAttr(overallProgress.toFixed(2));
         }
       } else {
         for (const cat of CATEGORIES) {

@@ -5,11 +5,13 @@ import {
   computeFlyTransform,
   computeOrbitPose,
   computeScrollProgress,
+  computeSlotScrollRange,
   computeStaggeredProgress,
   computeStickySlideState,
   easeInOutCubic,
   formatSlideCounter,
   formatToman,
+  smoothScrollEase,
   toPersianDigits,
   type FlyItemSpec,
 } from './scrollMath';
@@ -173,4 +175,47 @@ test('Persian digit and Toman currency formatters work properly', () => {
   assert.equal(formatToman(540000), '۵۴۰٬۰۰۰ تومان');
   assert.equal(formatSlideCounter(0, 7), '۰۱ / ۰۷');
   assert.equal(formatSlideCounter(6, 7), '۰۷ / ۰۷');
+});
+
+test('smoothScrollEase stays calm in mid-flight without aggressive surge', () => {
+  assert.equal(smoothScrollEase(0), 0);
+  assert.equal(smoothScrollEase(0.5), 0.5);
+  assert.equal(smoothScrollEase(1), 1);
+  // Derivative around midpoint (0.45 -> 0.55) must stay <= 1.3 (much calmer than cubic 1.5)
+  const midSlope = (smoothScrollEase(0.55) - smoothScrollEase(0.45)) / 0.1;
+  assert.ok(midSlope <= 1.3, `Expected calm midSlope <= 1.3, got ${midSlope}`);
+});
+
+test('computeSlotScrollRange keeps flying bottles centered inside viewport instead of racing ahead', () => {
+  const heroCenterDocY = 445;
+  const row1SlotDocY = 1220;
+  const row2SlotDocY = 1500;
+  const viewportHeight = 900;
+
+  const row1Range = computeSlotScrollRange({
+    heroCenterDocY,
+    slotCenterDocY: row1SlotDocY,
+    viewportHeight,
+    dockViewportRatio: 0.5,
+  });
+  const row2Range = computeSlotScrollRange({
+    heroCenterDocY,
+    slotCenterDocY: row2SlotDocY,
+    viewportHeight,
+    dockViewportRatio: 0.62,
+  });
+
+  // Row 2 finishes docking after Row 1 (as Row 2 enters view)
+  assert.ok(row2Range.scrollEnd > row1Range.scrollEnd);
+
+  // Verify throughout the entire scroll from 0 to row1Range.scrollEnd, bottle screenY stays comfortably inside viewport
+  for (let s = 0; s <= row1Range.scrollEnd; s += 80) {
+    const p = computeScrollProgress(s, row1Range.scrollStart, row1Range.scrollEnd);
+    const bottleDocY = heroCenterDocY + (row1SlotDocY - heroCenterDocY) * smoothScrollEase(p);
+    const screenY = bottleDocY - s;
+    assert.ok(
+      screenY >= 240 && screenY <= 620,
+      `At scrollY=${s}, Row 1 bottle screenY=${screenY} drifted out of comfortable viewport zone`
+    );
+  }
 });

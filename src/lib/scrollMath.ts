@@ -58,6 +58,16 @@ export function easeInOutCubic(t: number): number {
   return c < 0.5 ? 4 * c * c * c : 1 - Math.pow(-2 * c + 2, 3) / 2;
 }
 
+/**
+ * Balanced scroll-tracking ease: blends linear 1:1 scroll lock with smoothstep
+ * so bottles start and land softly without surging ahead of scroll in mid-flight.
+ */
+export function smoothScrollEase(t: number): number {
+  const c = clamp(t, 0, 1);
+  const smoothstep = c * c * (3 - 2 * c);
+  return lerp(c, smoothstep, 0.55);
+}
+
 export function lerp(start: number, end: number, t: number): number {
   return start + (end - start) * t;
 }
@@ -84,6 +94,43 @@ export function computeStaggeredProgress(
 ): number {
   const span = Math.max(staggerEnd - staggerStart, 0.001);
   return clamp((globalProgress - staggerStart) / span, 0, 1);
+}
+
+/**
+ * Computes a per-slot scroll range [scrollStart, scrollEnd] so each bottle rides
+ * roughly 1:1 with the viewport center and docks right as its target card enters
+ * comfortable view — never racing ahead off the bottom of the screen.
+ */
+export function computeSlotScrollRange(params: {
+  heroCenterDocY: number;
+  slotCenterDocY: number;
+  viewportHeight: number;
+  dockViewportRatio?: number;
+  staggerPx?: number;
+}): { scrollStart: number; scrollEnd: number } {
+  const {
+    heroCenterDocY,
+    slotCenterDocY,
+    viewportHeight,
+    dockViewportRatio = 0.56,
+    staggerPx = 0,
+  } = params;
+
+  const scrollStart = Math.max(0, staggerPx);
+  const desiredDockScreenY = clamp(
+    viewportHeight * dockViewportRatio,
+    240,
+    Math.max(240, viewportHeight - 160)
+  );
+  const travelDistance = Math.max(0, slotCenterDocY - heroCenterDocY);
+
+  // Ideal scroll position where the target slot reaches desiredDockScreenY in viewport
+  const naturalEnd = slotCenterDocY - desiredDockScreenY;
+  // Guarantee average vertical bottle velocity never races ahead of scroll (> ~1.12x)
+  const minSafeEnd = scrollStart + Math.max(240, travelDistance * 0.9);
+  const scrollEnd = Math.max(naturalEnd, minSafeEnd);
+
+  return { scrollStart, scrollEnd };
 }
 
 /**
@@ -166,6 +213,7 @@ export function computeOrbitPose(params: {
  */
 export function computeFlyTransform(params: {
   globalProgress: number;
+  directProgress?: number;
   heroCenter: Point2D;
   targetSlot: RectBox;
   baseWidth: number;
@@ -177,6 +225,7 @@ export function computeFlyTransform(params: {
 }): FlyTransformResult {
   const {
     globalProgress,
+    directProgress,
     heroCenter,
     targetSlot,
     baseWidth,
@@ -187,12 +236,15 @@ export function computeFlyTransform(params: {
     reducedMotion = false,
   } = params;
 
-  const rawLocal = computeStaggeredProgress(
-    globalProgress,
-    spec.staggerStart,
-    spec.staggerEnd
-  );
-  const eased = easeInOutCubic(rawLocal);
+  const rawLocal =
+    directProgress !== undefined
+      ? clamp(directProgress, 0, 1)
+      : computeStaggeredProgress(
+          globalProgress,
+          spec.staggerStart,
+          spec.staggerEnd
+        );
+  const eased = smoothScrollEase(rawLocal);
 
   const orbit = computeOrbitPose({
     spec,
