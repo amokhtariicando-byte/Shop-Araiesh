@@ -1,0 +1,8 @@
+{
+  "name": "داریمش | DARIMISH — فروشگاه محصولات بهداشتی و خانگی",
+  "description": "فروشگاه اینترنتی داریمش؛ شوینده، بهداشتی، مراقبت از مو و پوست و محصولات خانگی با تجربه بصری تعاملی.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
